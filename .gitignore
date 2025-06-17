@@ -1,0 +1,31 @@
+# Virtual environments
+.venv/
+
+# VSCode settings
+.vscode/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# JAX/Flax & ML checkpoints
+*.pkl
+*.npz
+*.msgpack
+*.flax
+
+# Notebook and cache artifacts
+.ipynb_checkpoints/
+
+# Logs, coverage, and test cache
+*.log
+coverage/
+.pytest_cache/
+
+# System files
+.DS_Store
+
+pip/
+.python-version
+.venv/

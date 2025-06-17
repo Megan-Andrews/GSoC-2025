@@ -1,0 +1,20 @@
+# requirements.txt
+
+# Core dependencies
+flax
+jax
+jaxlib
+optax==0.1.7
+sentencepiece==0.1.99
+jaxtyping==0.2.25
+orbax-checkpoint==0.4.4
+
+# Testing
+absl-py==1.4.0
+pytest
+numpy>=1.23
+
+# Dev tools
+pylint
+black
+isort
