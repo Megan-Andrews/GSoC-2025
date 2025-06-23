@@ -28,6 +28,7 @@ import layers
 import modules
 import params as params_lib
 import sow_lib
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array  # pylint: disable=g-importing-member,g-multiple-import
 
@@ -133,21 +134,18 @@ class TransformerConfig:
     Returns:
       TransformerConfig.
     """
-
+    # TODO verify Gemma 2 and 3 module names
     # Post Attn Norm is only used starting from Gemma 2.
     use_post_attn_norm = (
-        'post_attention_norm' in params['transformer']['layer_0']
+        'post_attention_norm' in params['llm']['layers']
     )
 
     # QK Norm is only used starting from Gemma 3.
-    use_qk_norm = '_query_norm' in params['transformer']['layer_0']['attn']
+    use_qk_norm = '_query_norm' in params['llm']['layers']['attn']
 
-    # Num layers will give use the model size.
-    layer_names = [
-        name for name in params['transformer'].keys() if 'layer' in name
-    ]
-    layer_names = [name.replace('layer_', '') for name in layer_names]
-    num_layers = max([int(layer) for layer in layer_names]) + 1
+    # TODO: Test that this correctly assigns the number of model layers to num_layers
+    first_leaf = next(iter(jax.tree_util.tree_leaves(params['llm']['layers'])))
+    num_layers = first_leaf.shape[0]
 
     if not use_post_attn_norm:  # Gemma 1.
       if num_layers == _NUM_LAYERS_GEMMA_2B:
@@ -449,7 +447,7 @@ class Transformer(nnx.Module):
         module_factory=lambda: cls(
             config, rngs=nnx.Rngs(params=0), sow_config=sow_config
         ),
-        variables=params['transformer'],
+        variables=params['llm'],
         map_key_fn=_map_linen_var_names,
         assign_val_fn=assign_val_fn,
     )
@@ -466,33 +464,34 @@ class Transformer(nnx.Module):
         embed_dim=config.embed_dim,
         rngs=rngs,
     )
-    self.layers = [
-        modules.Block(
-            num_heads=config.num_heads,
-            num_kv_heads=config.num_kv_heads,
-            embed_dim=config.embed_dim,
-            head_dim=config.head_dim,
-            hidden_dim=config.hidden_dim,
-            sliding_window_size=config.sliding_window_size,
-            use_post_attn_norm=config.use_post_attn_norm,
-            use_post_ffw_norm=config.use_post_ffw_norm,
-            attn_logits_soft_cap=config.attn_logits_soft_cap,
-            attn_type=attn_type,
-            query_pre_attn_scalar=config.query_pre_attn_scalar(),
-            rngs=rngs,
-            rope_base_frequency=config.local_base_frequency
-            if attn_type == modules.AttentionType.LOCAL_SLIDING
-            else config.global_base_frequency,
-            rope_scale_factor=config.local_scale_factor
-            if attn_type == modules.AttentionType.LOCAL_SLIDING
-            else config.global_scale_factor,
-            use_qk_norm=config.use_qk_norm,
-            sow_config=sow_config,
-        )
-        for _, attn_type in zip(
-            range(config.num_layers), config.attention_types
-        )
-    ]
+
+    # Modified layers to be stacked.
+    # @nnx.vmap(axis_size=config.num_layers)
+    def make_block():
+      return modules.Block(
+        num_heads=config.num_heads,
+        num_kv_heads=config.num_kv_heads,
+        embed_dim=config.embed_dim,
+        head_dim=config.head_dim,
+        hidden_dim=config.hidden_dim,
+        sliding_window_size=config.sliding_window_size,
+        use_post_attn_norm=config.use_post_attn_norm,
+        use_post_ffw_norm=config.use_post_ffw_norm,
+        attn_logits_soft_cap=config.attn_logits_soft_cap,
+        attn_type=config.attention_types[0],  # TODO: pass different attention_types
+        query_pre_attn_scalar=config.query_pre_attn_scalar(),
+        rngs=rngs,
+        rope_base_frequency=config.local_base_frequency,
+        rope_scale_factor=config.local_scale_factor,
+        use_qk_norm=config.use_qk_norm,
+        sow_config=sow_config,
+      )
+    
+    #TODO: Investigate why layer weights don't appear in the flattened state after
+    # using nnx.scan(make_block).
+    self.layers = nnx.scan(make_block)
+    # self.layers = make_block()
+
     self.final_norm = layers.RMSNorm(config.embed_dim, rngs=rngs)
     self.final_logits_softcap = config.final_logit_softcap
     self.sow_config = sow_config
@@ -524,17 +523,8 @@ class Transformer(nnx.Module):
     new_cache = None if cache is None else {}
     x = self.embedder.encode(last_tokens)
     self.sow_config.maybe_sow_embeddings(x, self)
-    for i, layer in enumerate(self.layers):
-      layer_name = f'layer_{i}'
-      layer_cache = cache[layer_name] if cache else None
-      layer_cache, x = layer(
-          x,
-          positions,
-          layer_cache,
-          attention_mask,
-      )
-      if cache is not None:
-        new_cache[layer_name] = layer_cache  # pytype: disable=container-type-mismatch
+
+    _, x = self.layers((), x, positions, cache, attention_mask)
 
     x = self.final_norm(x)
     logits = self.embedder.decode(x)
@@ -565,12 +555,12 @@ class Transformer(nnx.Module):
   ) -> Cache:
     """Initializes a new Transformer cache."""
     return {
-        f'layer_{i}': self.layers[i].init_cache(
-            cache_size=cache_size,
-            batch_size=batch_size,
-            dtype=dtype,
-        )
-        for i in range(self.num_layers)
+        # f'layer_{i}': self.layers[i].init_cache(
+        #     cache_size=cache_size,
+        #     batch_size=batch_size,
+        #     dtype=dtype,
+        # )
+        # for i in range(self.num_layers)
     }
 
   def init_intermediates(
@@ -588,42 +578,42 @@ class Transformer(nnx.Module):
     )
     if sow_config.embeddings:
       intermediates.embeddings = residual_stream_dummy
-    for layer in self.layers:
-      layer_intermediates = sow_lib.LayerIntermediates()
-      if sow_config.rs_after_attention:
-        layer_intermediates.rs_after_attention = residual_stream_dummy
-      if sow_config.rs_after_ffw:
-        layer_intermediates.rs_after_ffw = residual_stream_dummy
-      if sow_config.attn_logits_topk:
-        shape = (
-            batch_size,
-            buffer_size,
-            layer.attn.num_heads,
-            sow_config.attn_logits_topk,
-        )
-        layer_intermediates.attn_logits_topk_values = jnp.zeros(
-            shape,
-            dtype=dtype,
-        )
-        layer_intermediates.attn_logits_topk_indices = jnp.zeros(
-            shape,
-            dtype=jnp.int32,
-        )
-      if sow_config.mlp_hidden_topk:
-        shape = (
-            batch_size,
-            buffer_size,
-            sow_config.mlp_hidden_topk,
-        )
-        layer_intermediates.mlp_hidden_topk_values = jnp.zeros(
-            shape,
-            dtype=dtype,
-        )
-        layer_intermediates.mlp_hidden_topk_indices = jnp.zeros(
-            shape,
-            dtype=jnp.int32,
-        )
-      intermediates.layers.append(layer_intermediates)
+    # for layer in self.layers:
+    #   layer_intermediates = sow_lib.LayerIntermediates()
+    #   if sow_config.rs_after_attention:
+    #     layer_intermediates.rs_after_attention = residual_stream_dummy
+    #   if sow_config.rs_after_ffw:
+    #     layer_intermediates.rs_after_ffw = residual_stream_dummy
+    #   if sow_config.attn_logits_topk:
+    #     shape = (
+    #         batch_size,
+    #         buffer_size,
+    #         layer.attn.num_heads,
+    #         sow_config.attn_logits_topk,
+    #     )
+    #     layer_intermediates.attn_logits_topk_values = jnp.zeros(
+    #         shape,
+    #         dtype=dtype,
+    #     )
+    #     layer_intermediates.attn_logits_topk_indices = jnp.zeros(
+    #         shape,
+    #         dtype=jnp.int32,
+    #     )
+    #   if sow_config.mlp_hidden_topk:
+    #     shape = (
+    #         batch_size,
+    #         buffer_size,
+    #         sow_config.mlp_hidden_topk,
+    #     )
+    #     layer_intermediates.mlp_hidden_topk_values = jnp.zeros(
+    #         shape,
+    #         dtype=dtype,
+    #     )
+    #     layer_intermediates.mlp_hidden_topk_indices = jnp.zeros(
+    #         shape,
+    #         dtype=jnp.int32,
+    #     )
+    #   intermediates.layers.append(layer_intermediates)
     return intermediates
 
 

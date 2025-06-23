@@ -82,11 +82,15 @@ def module_from_linen_variables(
   state = dict(nnx.to_flat_state(state))
   for path, val in flax.traverse_util.flatten_dict(variables).items():
     mapped_path = map_key_fn(path)
+    # print(f'Mapped path={mapped_path} State={state}')
+    # print(f"'Module path={mdl.__class__.__name__}.{_flatten_path(mapped_path)}'"
+    #       f' (original path={path}).')
     if mapped_path not in state:
-      raise ValueError(
-          f"'{mdl.__class__.__name__}.{_flatten_path(mapped_path)}' doesn't "
-          f' exist (original path={path}).'
-      )
+      raise ValueError(f'Path={path} Mapped path={mapped_path} does not exist in State={state.keys()}')
+      # raise ValueError(
+      #     f"'{mdl.__class__.__name__}.{_flatten_path(mapped_path)}' doesn't "
+      #     f' exist (original path={path}).'
+      # )
     state = assign_val_fn(state, mapped_path, val)
   state = nnx.from_flat_state(state)
 

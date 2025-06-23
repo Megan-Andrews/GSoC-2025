@@ -1,0 +1,1 @@
+The gemma implementation is copied from the Flax [repository](https://github.com/google/flax/tree/main/examples/gemma) with modifications to accomodate for differences in model weight formatting. 
