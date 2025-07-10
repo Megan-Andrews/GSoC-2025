@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 
 
-
+# TODO: Complete test cases
 class MlpBlockTest(parameterized.TestCase):
 
   # Parameters for testing MlpBlock
@@ -32,7 +32,6 @@ class MlpBlockTest(parameterized.TestCase):
           features=2,
           mlp_dim=3,
           batch_size=2,
-          dropout_rate=0.5, # Set to 0 for deterministic testing
           dtype_mm=jnp.float32,
           expected_val=[5.8637934, 11.99979], # [11.72758674, 47.99916],
           expected_shape=(2, 1, 2),
@@ -43,7 +42,6 @@ class MlpBlockTest(parameterized.TestCase):
       features,
       mlp_dim,
       batch_size,
-      dropout_rate,
       dtype_mm,
       expected_val,
       expected_shape
@@ -55,7 +53,6 @@ class MlpBlockTest(parameterized.TestCase):
     mlp = modules.MlpBlock(
         features=features,
         mlp_dim=mlp_dim,
-        dropout_rate=dropout_rate,
         dtype_mm=dtype_mm,
         rngs=nnx.Rngs(params=0),
     )
@@ -67,56 +64,7 @@ class MlpBlockTest(parameterized.TestCase):
     mlp.linear2.bias.value = jnp.zeros((features,), dtype=dtype_mm)
 
     with jax.default_matmul_precision('float32'):
-      outputs = mlp(inputs, deterministic=True)
-
-    np.testing.assert_array_almost_equal(outputs[:, 0, 0], expected_val)
-    self.assertEqual(outputs.shape, expected_shape)
-
-
-  #TODO: Is configuring this implementation with dropout necessary, as this is an example for inference use cases?
-  #In any regard, this test case fails, dropout does not work. In need of debugging.
-  # Parameters for testing MlpBlock
-  @parameterized.parameters(
-      dict(
-          features=2,
-          mlp_dim=3,
-          batch_size=2,
-          dropout_rate=0.5, # Set to 0 for deterministic testing
-          dtype_mm=jnp.float32,
-          expected_val=[5.8637934, 11.99979], # [11.72758674, 47.99916],
-          expected_shape=(2, 1, 2),
-      ),
-  )
-  def test_mlp_block_not_deterministic(
-      self,
-      features,
-      mlp_dim,
-      batch_size,
-      dropout_rate,
-      dtype_mm,
-      expected_val,
-      expected_shape
-  ):
-    # Create inputs with shape (batch_size, sequence_length, features)
-    inputs = jnp.arange(1, batch_size+1)[:, None, None]
-    inputs = jnp.repeat(inputs, features, axis=-1)
-
-    mlp = modules.MlpBlock(
-        features=features,
-        mlp_dim=mlp_dim,
-        dropout_rate=dropout_rate,
-        dtype_mm=dtype_mm,
-        rngs=nnx.Rngs(params=0),
-    )
-
-    # Manually set kernels to ones and biases to zeros for predictable output
-    mlp.linear1.kernel.value = jnp.ones((features, mlp_dim), dtype=dtype_mm)
-    mlp.linear1.bias.value = jnp.zeros((mlp_dim,), dtype=dtype_mm)
-    mlp.linear2.kernel.value = jnp.ones((mlp_dim, features), dtype=dtype_mm)
-    mlp.linear2.bias.value = jnp.zeros((features,), dtype=dtype_mm)
-
-    with jax.default_matmul_precision('float32'):
-      outputs = mlp(inputs, deterministic=False)
+      outputs = mlp(inputs)
 
     np.testing.assert_array_almost_equal(outputs[:, 0, 0], expected_val)
     self.assertEqual(outputs.shape, expected_shape)
