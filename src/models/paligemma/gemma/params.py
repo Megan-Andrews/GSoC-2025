@@ -162,7 +162,9 @@ def load_checkpoint_np(npz, tree=None):
   """
   if isinstance(npz, str):  # If not already loaded, then load.
     npz = npload(npz)
-  keys, values = zip(*list(npz.items()))
+  #TODO: Temporarily only load img params
+  filtered_items = {k: v for k, v in npz.items() if k.startswith("params/llm")}
+  keys, values = zip(*filtered_items.items())
   if tree:
     checkpoint = tree.unflatten(values)
   else:

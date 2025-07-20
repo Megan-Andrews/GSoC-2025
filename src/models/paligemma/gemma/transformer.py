@@ -419,9 +419,19 @@ def _assign_linen_params_to_nnx_state(
   """Splits and maybe transposes gate_proj."""
   if 'gate_proj' in mapped_path:
     if transpose_gating_einsum:
+      # TODO: verify if swapping axes is correctly implemented for npz params
       val = jnp.swapaxes(val, 1, 2)
-    state[mapped_path].value = val[0]
-    state[mapped_path[:-2] + ('up_proj', 'kernel')].value = val[1]
+    
+    # val: (L, 2, in_dim, out_dim)
+    gate_proj_val = val[:, 0, ...]  # (L, in_dim, out_dim)
+    up_proj_val   = val[:, 1, ...]  # (L, in_dim, out_dim)
+
+    print(val.shape)
+    state[mapped_path].value = gate_proj_val
+    print(gate_proj_val.shape)
+    state[mapped_path[:-2] + ('up_proj', 'kernel')].value = up_proj_val
+    print(up_proj_val.shape)
+
   else:
     state[mapped_path].value = val
   return state
@@ -459,6 +469,7 @@ class Transformer(nnx.Module):
       rngs: nnx.Rngs,
       sow_config: sow_lib.SowConfig = sow_lib.SowConfig(),
   ):
+    self.config = config
     self.embedder = modules.Embedder(
         vocab_size=config.num_embed,
         embed_dim=config.embed_dim,
@@ -466,8 +477,11 @@ class Transformer(nnx.Module):
     )
 
     # Modified layers to be stacked.
-    # @nnx.vmap(axis_size=config.num_layers)
-    def make_block():
+    @nnx.split_rngs(splits=config.num_layers)
+    @nnx.vmap(in_axes=(None, 0), out_axes=0)
+    def make_block(attn_type, rngs: nnx.Rngs):
+      print("attn_type")
+      print(attn_type)
       return modules.Block(
         num_heads=config.num_heads,
         num_kv_heads=config.num_kv_heads,
@@ -478,20 +492,21 @@ class Transformer(nnx.Module):
         use_post_attn_norm=config.use_post_attn_norm,
         use_post_ffw_norm=config.use_post_ffw_norm,
         attn_logits_soft_cap=config.attn_logits_soft_cap,
-        attn_type=config.attention_types[0],  # TODO: pass different attention_types
+        attn_type=attn_type,
         query_pre_attn_scalar=config.query_pre_attn_scalar(),
         rngs=rngs,
-        rope_base_frequency=config.local_base_frequency,
-        rope_scale_factor=config.local_scale_factor,
+        rope_base_frequency=config.local_base_frequency
+        if attn_type == modules.AttentionType.LOCAL_SLIDING
+        else config.global_base_frequency,
+        rope_scale_factor=config.local_scale_factor
+        if attn_type == modules.AttentionType.LOCAL_SLIDING
+        else config.global_scale_factor,
         use_qk_norm=config.use_qk_norm,
         sow_config=sow_config,
       )
     
-    #TODO: Investigate why layer weights don't appear in the flattened state after
-    # using nnx.scan(make_block).
-    self.layers = nnx.scan(make_block)
-    # self.layers = make_block()
-
+    attn_type_ids = jnp.array([attn_type.value for attn_type in config.attention_types])
+    self.layers = make_block(attn_type_ids, rngs)
     self.final_norm = layers.RMSNorm(config.embed_dim, rngs=rngs)
     self.final_logits_softcap = config.final_logit_softcap
     self.sow_config = sow_config
@@ -520,11 +535,30 @@ class Transformer(nnx.Module):
       predicted_logits: output logits predicted by the model
       new_cache: updated cache if the input cache is not None, None elsewhere.
     """
+    @nnx.split_rngs(splits=self.num_layers)
+    @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=(0, nnx.Carry))
+    def forward_block(x, model: modules.Block):
+      # TODO: pass cache
+      x = model(x, positions, None , attention_mask)
+      # TODO: set new_cache
+      return x
+    
     new_cache = None if cache is None else {}
     x = self.embedder.encode(last_tokens)
     self.sow_config.maybe_sow_embeddings(x, self)
 
-    _, x = self.layers((), x, positions, cache, attention_mask)
+    _, x = forward_block(x, self.layers)
+    # for i, layer in enumerate(self.layers):
+    #   layer_name = f'layer_{i}'
+    #   layer_cache = cache[layer_name] if cache else None
+    #   layer_cache, x = layer(
+    #       x,
+    #       positions,
+    #       layer_cache,
+    #       attention_mask,
+    #   )
+    #   if cache is not None:
+    #     new_cache[layer_name] = layer_cache  # pytype: disable=container-type-mismatch
 
     x = self.final_norm(x)
     logits = self.embedder.decode(x)
@@ -545,7 +579,8 @@ class Transformer(nnx.Module):
 
   @property
   def num_layers(self) -> int:
-    return len(self.layers)
+    # return len(self.layers)
+    return self.config.num_layers
 
   def init_cache(
       self,

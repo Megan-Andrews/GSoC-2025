@@ -363,12 +363,11 @@ class Block(nnx.Module):
 
   def __call__(
       self,
-      carry: tuple,  # ← Modified, required for nnx.scan, even if unused
       x: jax.Array,
       segment_pos: jax.Array,
       cache: LayerCache | None,
       attn_mask: jax.Array,
-  ) -> tuple[tuple, tuple[LayerCache | None, jax.Array]]:
+  ) -> tuple[LayerCache | None, jax.Array]:
 
     # Attention.
     attn_inputs = self.pre_attention_norm(x)
@@ -391,7 +390,7 @@ class Block(nnx.Module):
     x += ffw_outputs
     self.sow_config.maybe_sow_rs_after_ffw(x, self)
 
-    return carry, (cache, x)
+    return cache, x
 
   def init_cache(
       self,

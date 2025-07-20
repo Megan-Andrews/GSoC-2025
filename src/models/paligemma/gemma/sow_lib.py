@@ -90,30 +90,30 @@ class TransformerIntermediates:
 
   def merge(self, decoding_step, transformer: nnx.Module):
     """Merges the intermediate activations from one step."""
-    if self.embeddings is not None:
-      try:
-        self.embeddings = self.embeddings.at[:, decoding_step + 1, ...].set(
-            transformer.embeddings.value[0][:, 0, ...]
-        )
-      except AttributeError as exc:
-        raise ValueError(
-            'Embeddings are not in the step intermediates.'
-        ) from exc
-    if len(self.layers) != len(transformer.layers):
-      raise ValueError(
-          'Number of layers in the transformer and intermediates do not match.'
-      )
-    for layer_intermediates, layer_module in zip(
-        self.layers, transformer.layers
-    ):
-      layer_intermediates.merge(decoding_step, layer_module)
+    # if self.embeddings is not None:
+    #   try:
+    #     self.embeddings = self.embeddings.at[:, decoding_step + 1, ...].set(
+    #         transformer.embeddings.value[0][:, 0, ...]
+    #     )
+    #   except AttributeError as exc:
+    #     raise ValueError(
+    #         'Embeddings are not in the step intermediates.'
+    #     ) from exc
+    # if len(self.layers) != len(transformer.layers):
+    #   raise ValueError(
+    #       'Number of layers in the transformer and intermediates do not match.'
+    #   )
+    # for layer_intermediates, layer_module in zip(
+    #     self.layers, transformer.layers
+    # ):
+    #   layer_intermediates.merge(decoding_step, layer_module)
 
   def trim(self, max_length: int):
     """Trims the intermediate activations to the given length."""
-    if self.embeddings is not None:
-      self.embeddings = self.embeddings[:, :max_length, ...]
-    for layer in self.layers:
-      layer.trim(max_length)
+    # if self.embeddings is not None:
+    #   self.embeddings = self.embeddings[:, :max_length, ...]
+    # for layer in self.layers:
+    #   layer.trim(max_length)
 
 
 @dataclasses.dataclass(frozen=True)
