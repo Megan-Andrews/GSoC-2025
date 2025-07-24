@@ -403,3 +403,32 @@ class Block(nnx.Module):
         batch_size=batch_size,
         dtype=dtype,
     )
+
+  @property
+  def num_layers(self) -> int:
+    _, state = nnx.split(self)
+    state = dict(nnx.to_flat_state(state))
+    transformer_num_layers = None
+    for _, val in state.items():
+      if val is None:
+        continue
+      if not isinstance(val, nnx.VariableState):
+        continue
+      # print(val.type == nnx.Param)
+      if val.type != nnx.Param:
+        continue
+      # try:
+      #   print(val.value.shape[0])
+      # except:
+      #   print("except", path, val.value)
+      # print(val.value.shape[0], val.value.ndim)
+      num_layers = val.value.shape[0]
+      # print("num layers", num_layers)
+      if transformer_num_layers is None:
+        transformer_num_layers = num_layers
+      elif num_layers != transformer_num_layers:
+          raise ValueError(
+              'Number of layers in the transformer are not consistent.'
+          )
+    # print(transformer_num_layers)
+    return transformer_num_layers

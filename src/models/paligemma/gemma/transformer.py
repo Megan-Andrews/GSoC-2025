@@ -426,11 +426,8 @@ def _assign_linen_params_to_nnx_state(
     gate_proj_val = val[:, 0, ...]  # (L, in_dim, out_dim)
     up_proj_val   = val[:, 1, ...]  # (L, in_dim, out_dim)
 
-    print(val.shape)
     state[mapped_path].value = gate_proj_val
-    print(gate_proj_val.shape)
     state[mapped_path[:-2] + ('up_proj', 'kernel')].value = up_proj_val
-    print(up_proj_val.shape)
 
   else:
     state[mapped_path].value = val
@@ -480,8 +477,6 @@ class Transformer(nnx.Module):
     @nnx.split_rngs(splits=config.num_layers)
     @nnx.vmap(in_axes=(None, 0), out_axes=0)
     def make_block(attn_type, rngs: nnx.Rngs):
-      print("attn_type")
-      print(attn_type)
       return modules.Block(
         num_heads=config.num_heads,
         num_kv_heads=config.num_kv_heads,
@@ -505,7 +500,7 @@ class Transformer(nnx.Module):
         sow_config=sow_config,
       )
     
-    attn_type_ids = jnp.array([attn_type.value for attn_type in config.attention_types])
+    attn_type_ids = [attn_type.value for attn_type in config.attention_types]
     self.layers = make_block(attn_type_ids, rngs)
     self.final_norm = layers.RMSNorm(config.embed_dim, rngs=rngs)
     self.final_logits_softcap = config.final_logit_softcap
@@ -515,9 +510,9 @@ class Transformer(nnx.Module):
       self,
       last_tokens: Array,  # [B, L]
       positions: Array,  # [B, L]
-      cache: Cache | None,  # (sequence length L')
+      cache: modules.LayerCache | None,  # (sequence length L')
       attention_mask: Array,  # [B, L, L']
-  ) -> tuple[Array, Cache | None]:
+  ) -> tuple[Array, modules.LayerCache | None]:
     """Transformer forward pass.
 
     You can run this forward pass two ways: with or without an attention kv
@@ -536,29 +531,18 @@ class Transformer(nnx.Module):
       new_cache: updated cache if the input cache is not None, None elsewhere.
     """
     @nnx.split_rngs(splits=self.num_layers)
-    @nnx.scan(in_axes=(nnx.Carry, 0), out_axes=(0, nnx.Carry))
-    def forward_block(x, model: modules.Block):
-      # TODO: pass cache
-      x = model(x, positions, None , attention_mask)
-      # TODO: set new_cache
-      return x
-    
+    @nnx.scan(in_axes=(nnx.Carry, 0, 0), out_axes=(nnx.Carry, 0))
+    def forward_block(x, cache: modules.LayerCache, block: modules.Block):
+      new_cache, x = block(x, positions, cache, attention_mask)
+      return x, new_cache
+
     new_cache = None if cache is None else {}
     x = self.embedder.encode(last_tokens)
     self.sow_config.maybe_sow_embeddings(x, self)
 
-    _, x = forward_block(x, self.layers)
-    # for i, layer in enumerate(self.layers):
-    #   layer_name = f'layer_{i}'
-    #   layer_cache = cache[layer_name] if cache else None
-    #   layer_cache, x = layer(
-    #       x,
-    #       positions,
-    #       layer_cache,
-    #       attention_mask,
-    #   )
-    #   if cache is not None:
-    #     new_cache[layer_name] = layer_cache  # pytype: disable=container-type-mismatch
+    x, cache = forward_block(x, cache, self.layers)
+    if cache is not None:
+      new_cache = cache
 
     x = self.final_norm(x)
     logits = self.embedder.decode(x)
@@ -579,7 +563,6 @@ class Transformer(nnx.Module):
 
   @property
   def num_layers(self) -> int:
-    # return len(self.layers)
     return self.config.num_layers
 
   def init_cache(
@@ -587,16 +570,17 @@ class Transformer(nnx.Module):
       cache_size: int,
       batch_size: int,
       dtype: jnp.dtype = jnp.bfloat16,
-  ) -> Cache:
+  ) -> modules.LayerCache:
     """Initializes a new Transformer cache."""
-    return {
-        # f'layer_{i}': self.layers[i].init_cache(
-        #     cache_size=cache_size,
-        #     batch_size=batch_size,
-        #     dtype=dtype,
-        # )
-        # for i in range(self.num_layers)
-    }
+
+    @nnx.split_rngs(splits=self.num_layers)
+    @nnx.scan(in_axes=0, out_axes=0)
+    def scan_cache_init(block: modules.Block):
+      cache = block.init_cache(cache_size, batch_size, dtype)
+      return cache
+
+    return scan_cache_init(self.layers)
+
 
   def init_intermediates(
       self,
@@ -606,49 +590,59 @@ class Transformer(nnx.Module):
       dtype: jnp.dtype = jnp.float32,
   ) -> sow_lib.TransformerIntermediates:
     """Initializes the intermediate activations that will be filled."""
+    # print("Initializing Sow Intermediates")
     intermediates = sow_lib.TransformerIntermediates()
     residual_stream_dummy = jnp.zeros(
         (batch_size, buffer_size, self.embed_dim),
         dtype=dtype,
     )
+    residual_stream_dummy_layers = jnp.zeros(
+        (self.num_layers, batch_size, buffer_size, self.embed_dim),
+        dtype=dtype,
+    )
     if sow_config.embeddings:
       intermediates.embeddings = residual_stream_dummy
-    # for layer in self.layers:
-    #   layer_intermediates = sow_lib.LayerIntermediates()
-    #   if sow_config.rs_after_attention:
-    #     layer_intermediates.rs_after_attention = residual_stream_dummy
-    #   if sow_config.rs_after_ffw:
-    #     layer_intermediates.rs_after_ffw = residual_stream_dummy
-    #   if sow_config.attn_logits_topk:
-    #     shape = (
-    #         batch_size,
-    #         buffer_size,
-    #         layer.attn.num_heads,
-    #         sow_config.attn_logits_topk,
-    #     )
-    #     layer_intermediates.attn_logits_topk_values = jnp.zeros(
-    #         shape,
-    #         dtype=dtype,
-    #     )
-    #     layer_intermediates.attn_logits_topk_indices = jnp.zeros(
-    #         shape,
-    #         dtype=jnp.int32,
-    #     )
-    #   if sow_config.mlp_hidden_topk:
-    #     shape = (
-    #         batch_size,
-    #         buffer_size,
-    #         sow_config.mlp_hidden_topk,
-    #     )
-    #     layer_intermediates.mlp_hidden_topk_values = jnp.zeros(
-    #         shape,
-    #         dtype=dtype,
-    #     )
-    #     layer_intermediates.mlp_hidden_topk_indices = jnp.zeros(
-    #         shape,
-    #         dtype=jnp.int32,
-    #     )
-    #   intermediates.layers.append(layer_intermediates)
+    # for _ in range(self.num_layers):
+    layer_intermediates = sow_lib.LayerIntermediates()
+    # print("Initializing layer intermediates")
+    # print("Sow config:", sow_config)
+    if sow_config.rs_after_attention:
+      layer_intermediates.rs_after_attention = residual_stream_dummy_layers
+    if sow_config.rs_after_ffw:
+      layer_intermediates.rs_after_ffw = residual_stream_dummy_layers
+    if sow_config.attn_logits_topk:
+      shape = (
+          self.num_layers, # Fist dimension is the num layers in stacked intermediates
+          batch_size,
+          buffer_size,
+          self.config.num_heads,
+          sow_config.attn_logits_topk,
+      )
+      layer_intermediates.attn_logits_topk_values = jnp.zeros(
+          shape,
+          dtype=dtype,
+      )
+      layer_intermediates.attn_logits_topk_indices = jnp.zeros(
+          shape,
+          dtype=jnp.int32,
+      )
+    if sow_config.mlp_hidden_topk:
+      shape = (
+          self.num_layers, # Fist dimension is the num layers in stacked intermediates
+          batch_size,
+          buffer_size,
+          sow_config.mlp_hidden_topk,
+      )
+      layer_intermediates.mlp_hidden_topk_values = jnp.zeros(
+          shape,
+          dtype=dtype,
+      )
+      layer_intermediates.mlp_hidden_topk_indices = jnp.zeros(
+          shape,
+          dtype=jnp.int32,
+      )
+    # print("Setting Layer intermediates")
+    intermediates.layers = layer_intermediates
     return intermediates
 
 

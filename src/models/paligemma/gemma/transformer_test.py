@@ -30,8 +30,8 @@ def create_fake_params(config: transformer_lib.TransformerConfig):
     return defaultdict(nested_defaultdict)
 
   res = nested_defaultdict()
-  res['transformer'] = nested_defaultdict()
-  params = res['transformer']
+  res['llm'] = nested_defaultdict()
+  params = res['llm']
   # 1. embedding params
   params['embedder']['input_embedding'] = jnp.ones(
       (config.num_embed, config.embed_dim)
@@ -40,46 +40,46 @@ def create_fake_params(config: transformer_lib.TransformerConfig):
   params['final_norm'] = {'scale': jnp.ones((config.embed_dim,))}
 
   # 3. attention block params
-  for layer_idx in range(config.num_layers):
-    params[f'layer_{layer_idx}']['attn']['attn_vec_einsum']['w'] = jnp.ones(
-        (config.num_heads, config.head_dim, config.embed_dim)
+  # for layer_idx in range(config.num_layers):
+  params['layers']['attn']['attn_vec_einsum']['w'] = jnp.ones(
+      (config.num_layers, config.num_heads, config.head_dim, config.embed_dim)
+  )
+  if config.num_heads == config.num_kv_heads:
+    params['layers']['attn']['qkv_einsum']['w'] = jnp.ones(
+        (config.num_layers, 3, config.num_heads, config.embed_dim, config.head_dim)
     )
-    if config.num_heads == config.num_kv_heads:
-      params[f'layer_{layer_idx}']['attn']['qkv_einsum']['w'] = jnp.ones(
-          (3, config.num_heads, config.embed_dim, config.head_dim)
-      )
-    else:
-      params[f'layer_{layer_idx}']['attn']['q_einsum']['w'] = jnp.ones(
-          (config.num_heads, config.embed_dim, config.head_dim)
-      )
-      params[f'layer_{layer_idx}']['attn']['kv_einsum']['w'] = jnp.ones(
-          (config.num_kv_heads, config.embed_dim, config.head_dim)
-      )
-
-    # 4. feedforward block params
-    params[f'layer_{layer_idx}']['mlp']['gating_einsum'] = jnp.ones(
-        (2, config.embed_dim, config.hidden_dim)
+  else:
+    params['layers']['attn']['q_einsum']['w'] = jnp.ones(
+        (config.num_layers, config.num_heads, config.embed_dim, config.head_dim)
     )
-    params[f'layer_{layer_idx}']['mlp']['linear'] = jnp.ones(
-        (config.hidden_dim, config.embed_dim)
+    params['layers']['attn']['kv_einsum']['w'] = jnp.ones(
+        (config.num_layers, config.num_kv_heads, config.embed_dim, config.head_dim)
     )
 
-    # 5. layer norm params
-    params[f'layer_{layer_idx}']['pre_attention_norm']['scale'] = jnp.ones((
-        config.embed_dim,
+  # 4. feedforward block params
+  params['layers']['mlp']['gating_einsum'] = jnp.ones(
+      (config.num_layers, 2, config.embed_dim, config.hidden_dim)
+  )
+  params['layers']['mlp']['linear'] = jnp.ones(
+      (config.num_layers, config.hidden_dim, config.embed_dim)
+  )
+
+  # 5. layer norm params
+  params['layers']['pre_attention_norm']['scale'] = jnp.ones((
+      config.num_layers, config.embed_dim,
+  ))
+  params['layers']['pre_ffw_norm']['scale'] = jnp.ones((
+      config.num_layers, config.embed_dim,
+  ))
+
+  if config.use_post_attn_norm:
+    params['layers']['post_attention_norm']['scale'] = jnp.ones((
+        config.num_layers, config.embed_dim,
     ))
-    params[f'layer_{layer_idx}']['pre_ffw_norm']['scale'] = jnp.ones((
-        config.embed_dim,
+  if config.use_post_ffw_norm:
+    params['layers']['post_ffw_norm']['scale'] = jnp.ones((
+        config.num_layers, config.embed_dim,
     ))
-
-    if config.use_post_attn_norm:
-      params[f'layer_{layer_idx}']['post_attention_norm']['scale'] = jnp.ones((
-          config.embed_dim,
-      ))
-    if config.use_post_ffw_norm:
-      params[f'layer_{layer_idx}']['post_ffw_norm']['scale'] = jnp.ones((
-          config.embed_dim,
-      ))
   return res
 
 
@@ -99,7 +99,7 @@ class TransformerTest(parameterized.TestCase):
           batch_size=7,
           sequence_length=17,
           expected_outputs_shape=(7, 17, 17),
-          expected_cache_shape=(7, 29, 2, 8),
+          expected_cache_shape=(3, 7, 29, 2, 8),
       ),
       dict(
           num_layers=3,
@@ -113,7 +113,7 @@ class TransformerTest(parameterized.TestCase):
           batch_size=1,
           sequence_length=1,
           expected_outputs_shape=(1, 1, 4),
-          expected_cache_shape=(1, 2, 1, 4),
+          expected_cache_shape=(3, 1, 2, 1, 4),
       ),
   )
   def test_transformer(
@@ -163,7 +163,7 @@ class TransformerTest(parameterized.TestCase):
     )
 
     self.assertEqual(outputs.shape, expected_outputs_shape)
-    self.assertEqual(cache['layer_0']['v'].shape, expected_cache_shape)
+    self.assertEqual(cache['v'].shape, expected_cache_shape)
 
   @parameterized.parameters(
       ('final_logit_softcap',),
@@ -252,9 +252,9 @@ class TransformerTest(parameterized.TestCase):
               use_post_ffw_norm=False,
           ),
           cache_size=2,
-          keys=['layer_0', 'layer_1'],
-          k_shape=(1, 2, 3, 4),
-          v_shape=(1, 2, 3, 4),
+          keys=['end_index', 'k', 'v'],
+          k_shape=(2, 1, 2, 3, 4),
+          v_shape=(2, 1, 2, 3, 4),
       )
   ])
   def test_creates_cache(self, config, cache_size, keys, k_shape, v_shape):
@@ -266,9 +266,10 @@ class TransformerTest(parameterized.TestCase):
         batch_size=1,
         dtype=jnp.float32,
     )
+
     self.assertEqual(list(cache.keys()), keys)
-    self.assertEqual(cache['layer_0']['k'].shape, k_shape)
-    self.assertEqual(cache['layer_0']['v'].shape, v_shape)
+    self.assertEqual(cache['k'].shape, k_shape)
+    self.assertEqual(cache['v'].shape, v_shape)
 
   @parameterized.parameters([
       dict(
@@ -441,80 +442,85 @@ class TransformerTest(parameterized.TestCase):
       self.assertFalse(hasattr(transformer, 'embeddings'))
 
     # for layer in transformer.layers:
-    #   if sow_config.rs_after_attention:
-    #     self.assertTrue(hasattr(layer, 'rs_after_attention'))
-    #     rs_after_attention = layer.rs_after_attention.value[0]
-    #     self.assertIsNotNone(rs_after_attention)
-    #     self.assertEqual(
-    #         rs_after_attention.shape,
-    #         (batch_size, sequence_length, config.embed_dim),
-    #     )
-    #   else:
-    #     self.assertFalse(hasattr(layer, 'rs_after_attention'))
-    #   if sow_config.rs_after_ffw:
-    #     self.assertTrue(hasattr(layer, 'rs_after_ffw'))
-    #     rs_after_ffw = layer.rs_after_ffw.value[0]
-    #     self.assertIsNotNone(rs_after_ffw)
-    #     self.assertEqual(
-    #         rs_after_ffw.shape,
-    #         (batch_size, sequence_length, config.embed_dim),
-    #     )
-    #   else:
-    #     self.assertFalse(hasattr(layer, 'rs_after_ffw'))
-    #   if sow_config.attn_logits_topk:
-    #     self.assertTrue(hasattr(layer.attn, 'logits_topk_values'))
-    #     attn_logits_topk_values = layer.attn.logits_topk_values.value[0]
-    #     self.assertIsNotNone(attn_logits_topk_values)
-    #     self.assertEqual(
-    #         attn_logits_topk_values.shape,
-    #         (
-    #             batch_size,
-    #             sequence_length,
-    #             config.num_heads,
-    #             sow_config.attn_logits_topk,
-    #         ),
-    #     )
-    #     self.assertTrue(hasattr(layer.attn, 'logits_topk_indices'))
-    #     attn_logits_topk_indices = layer.attn.logits_topk_indices.value[0]
-    #     self.assertIsNotNone(attn_logits_topk_indices)
-    #     self.assertEqual(
-    #         attn_logits_topk_indices.shape,
-    #         (
-    #             batch_size,
-    #             sequence_length,
-    #             config.num_heads,
-    #             sow_config.attn_logits_topk,
-    #         ),
-    #     )
-    #   else:
-    #     self.assertFalse(hasattr(layer.attn, 'logits_topk_values'))
-    #     self.assertFalse(hasattr(layer.attn, 'logits_topk_indices'))
-    #   if sow_config.mlp_hidden_topk:
-    #     self.assertTrue(hasattr(layer.mlp, 'hidden_topk_values'))
-    #     ffw_hidden_topk_values = layer.mlp.hidden_topk_values.value[0]
-    #     self.assertIsNotNone(ffw_hidden_topk_values)
-    #     self.assertEqual(
-    #         ffw_hidden_topk_values.shape,
-    #         (
-    #             batch_size,
-    #             sequence_length,
-    #             sow_config.mlp_hidden_topk,
-    #         ),
-    #     )
-    #     self.assertTrue(hasattr(layer.mlp, 'hidden_topk_indices'))
-    #     ffw_hidden_topk_indices = layer.mlp.hidden_topk_indices.value[0]
-    #     self.assertIsNotNone(ffw_hidden_topk_indices)
-    #     self.assertEqual(
-    #         ffw_hidden_topk_indices.shape,
-    #         (
-    #             batch_size,
-    #             sequence_length,
-    #             sow_config.mlp_hidden_topk,
-    #         ),
-    #     )
-    #   else:
-    #     self.assertFalse(hasattr(layer.mlp, 'hidden_topk_values'))
-    #     self.assertFalse(hasattr(layer.mlp, 'hidden_topk_indices'))
+    layer = transformer.layers
+    if sow_config.rs_after_attention:
+      self.assertTrue(hasattr(layer, 'rs_after_attention'))
+      rs_after_attention = layer.rs_after_attention.value[0]
+      self.assertIsNotNone(rs_after_attention)
+      self.assertEqual(
+          rs_after_attention.shape,
+          (num_layers, batch_size, sequence_length, config.embed_dim),
+      )
+    else:
+      self.assertFalse(hasattr(layer, 'rs_after_attention'))
+    if sow_config.rs_after_ffw:
+      self.assertTrue(hasattr(layer, 'rs_after_ffw'))
+      rs_after_ffw = layer.rs_after_ffw.value[0]
+      self.assertIsNotNone(rs_after_ffw)
+      self.assertEqual(
+          rs_after_ffw.shape,
+          (num_layers, batch_size, sequence_length, config.embed_dim),
+      )
+    else:
+      self.assertFalse(hasattr(layer, 'rs_after_ffw'))
+    if sow_config.attn_logits_topk:
+      self.assertTrue(hasattr(layer.attn, 'logits_topk_values'))
+      attn_logits_topk_values = layer.attn.logits_topk_values.value[0]
+      self.assertIsNotNone(attn_logits_topk_values)
+      self.assertEqual(
+          attn_logits_topk_values.shape,
+          (
+              num_layers,
+              batch_size,
+              sequence_length,
+              config.num_heads,
+              sow_config.attn_logits_topk,
+          ),
+      )
+      self.assertTrue(hasattr(layer.attn, 'logits_topk_indices'))
+      attn_logits_topk_indices = layer.attn.logits_topk_indices.value[0]
+      self.assertIsNotNone(attn_logits_topk_indices)
+      self.assertEqual(
+          attn_logits_topk_indices.shape,
+          (
+              num_layers,
+              batch_size,
+              sequence_length,
+              config.num_heads,
+              sow_config.attn_logits_topk,
+          ),
+      )
+    else:
+      self.assertFalse(hasattr(layer.attn, 'logits_topk_values'))
+      self.assertFalse(hasattr(layer.attn, 'logits_topk_indices'))
+    if sow_config.mlp_hidden_topk:
+      self.assertTrue(hasattr(layer.mlp, 'hidden_topk_values'))
+      ffw_hidden_topk_values = layer.mlp.hidden_topk_values.value[0]
+      self.assertIsNotNone(ffw_hidden_topk_values)
+      self.assertEqual(
+          ffw_hidden_topk_values.shape,
+          (
+              num_layers,
+              batch_size,
+              sequence_length,
+              sow_config.mlp_hidden_topk,
+          ),
+      )
+      self.assertTrue(hasattr(layer.mlp, 'hidden_topk_indices'))
+      ffw_hidden_topk_indices = layer.mlp.hidden_topk_indices.value[0]
+      self.assertIsNotNone(ffw_hidden_topk_indices)
+      self.assertEqual(
+          ffw_hidden_topk_indices.shape,
+          (
+              num_layers,
+              batch_size,
+              sequence_length,
+              sow_config.mlp_hidden_topk,
+          ),
+      )
+    else:
+      self.assertFalse(hasattr(layer.mlp, 'hidden_topk_values'))
+      self.assertFalse(hasattr(layer.mlp, 'hidden_topk_indices'))
 
 
 if __name__ == '__main__':

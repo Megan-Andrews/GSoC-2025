@@ -159,6 +159,7 @@ class SamplerTest(absltest.TestCase):
     new_transformer = transformer_lib.Transformer(
         transformer_config, rngs=nnx.Rngs(params=42)
     )
+    
     sampler.transformer_state = nnx.state(new_transformer, nnx.Param)
     new_logits = sampler(input_strings, total_generation_steps=10).logits
     with self.assertRaises(AssertionError):
@@ -198,7 +199,7 @@ class SamplerTest(absltest.TestCase):
         make_config(num_layers=3, embed_dim=768), rngs=nnx.Rngs(params=42)
     )
     with self.assertRaisesRegex(
-        ValueError, '.*must have the same structure.*'
+        ValueError, '.*must have the same shape and dtype.*' #TODO: Modified, since layers are now stacked, the state is the same regardless of the number of layers, however the shape of the leaf states will differ.
     ):
       sampler.transformer_state = nnx.state(new_transformer, nnx.Param)
 
@@ -454,42 +455,45 @@ class SamplerTest(absltest.TestCase):
         jnp.sum(intermediates.embeddings[:, 2, ...]),
     )
     # Verify that the intermediates are filled in for each layer.
-    self.assertLen(intermediates.layers, config.num_layers)
-    for layer in intermediates.layers:
-      # For the requested intermediates we check the shape and that values are
-      # not all zeros, which was the initial value.
-      self.assertReasonableTensor(
-          layer.rs_after_ffw,
-          expected_shape=(2, length, config.embed_dim),
-      )
-      self.assertReasonableTensor(
-          layer.attn_logits_topk_values,
-          expected_shape=(
-              2,
-              length,
-              config.num_heads,
-              sow_config.attn_logits_topk,
-          ),
-      )
-      self.assertReasonableTensor(
-          layer.attn_logits_topk_indices,
-          expected_shape=(
-              2,
-              length,
-              config.num_heads,
-              sow_config.attn_logits_topk,
-          ),
-      )
-      self.assertReasonableTensor(
-          layer.mlp_hidden_topk_values,
-          expected_shape=(2, length, sow_config.mlp_hidden_topk),
-      )
-      self.assertReasonableTensor(
-          layer.mlp_hidden_topk_indices,
-          expected_shape=(2, length, sow_config.mlp_hidden_topk),
-      )
-      # For the none requested intermediates we want to have None values.
-      self.assertIsNone(layer.rs_after_attention)
+    self.assertEqual(intermediates.layers.num_layers, config.num_layers) # TODO: Modified from original test case.
+    # for layer in intermediates.layers:
+    layer = intermediates.layers
+    # For the requested intermediates we check the shape and that values are
+    # not all zeros, which was the initial value.
+    self.assertReasonableTensor(
+        layer.rs_after_ffw,
+        expected_shape=(num_layers, 2, length, config.embed_dim),
+    )
+    self.assertReasonableTensor(
+        layer.attn_logits_topk_values,
+        expected_shape=(
+            num_layers,
+            2,
+            length,
+            config.num_heads,
+            sow_config.attn_logits_topk,
+        ),
+    )
+    self.assertReasonableTensor(
+        layer.attn_logits_topk_indices,
+        expected_shape=(
+            num_layers,
+            2,
+            length,
+            config.num_heads,
+            sow_config.attn_logits_topk,
+        ),
+    )
+    self.assertReasonableTensor(
+        layer.mlp_hidden_topk_values,
+        expected_shape=(num_layers, 2, length, sow_config.mlp_hidden_topk),
+    )
+    self.assertReasonableTensor(
+        layer.mlp_hidden_topk_indices,
+        expected_shape=(num_layers, 2, length, sow_config.mlp_hidden_topk),
+    )
+    # For the none requested intermediates we want to have None values.
+    self.assertIsNone(layer.rs_after_attention)
 
   def test_compute_attention_mask(self):
     # Check that the input mask is correctly applied when total sampling steps

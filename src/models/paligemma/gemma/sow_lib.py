@@ -37,23 +37,26 @@ class LayerIntermediates:
 
   def merge(self, decoding_step, layer: nnx.Module):
     """Merges the intermediate activations from one step."""
-
+    # print("merging layer intermediates")
     for field in dataclasses.fields(self.__class__):
       value = getattr(self, field.name)
       if value is None:
+        # print("value is none")
         continue
       # We put mlp and attn intermediates into this class without any further
       # nesting. So we have to retrieve the intermediates from the correct
       # sub-module.
+      # print(field.name)
+      # print("decoding_step", decoding_step)
+      # print("LayerIntermediates value shape", value.shape)
       try:
         if field.name.startswith('attn_'):
           step_value = getattr(
               layer.attn, field.name.replace('attn_', '')
           ).value[0]
         elif field.name.startswith('mlp_'):
-          step_value = getattr(layer.mlp, field.name.replace('mlp_', '')).value[
-              0
-          ]
+          step_value = getattr(
+              layer.mlp, field.name.replace('mlp_', '')).value[0]
         else:
           step_value = getattr(layer, field.name).value[0]
       except AttributeError as exc:
@@ -63,19 +66,36 @@ class LayerIntermediates:
       # This logic is the same for all intermediates. The second dimenions is
       # the length dimension, where we want to merge the intermediates from
       # multiple steps.
+      # print("LayerIntermediates step value shape", step_value.shape)
       setattr(
           self,
           field.name,
-          value.at[:, decoding_step + 1].set(step_value[:, 0, ...]),
+          value.at[:, :, decoding_step + 1].set(step_value[:,:, 0, ...]),  # TODO: Verify this modification is correct
       )
+      # print("done merging layer intermediates")
 
   def trim(self, max_length: int):
     """Trims the intermediate activations to the given length."""
     for field in dataclasses.fields(self.__class__):
       value = getattr(self, field.name)
       if value is not None:
-        setattr(self, field.name, value[:, :max_length, ...])
+        setattr(self, field.name, value[:, :, :max_length, ...]) # TODO: Verify this modification is correct
 
+  @property
+  def num_layers(self) -> int:
+    intermediate_num_layers = None
+    for field in dataclasses.fields(self):
+      value = getattr(self, field.name)
+      if value is not None:
+        # print(field.name)
+        # print(value.shape[0])
+        if intermediate_num_layers is None:
+          intermediate_num_layers = value.shape[0]
+        elif value.shape[0] != intermediate_num_layers:
+          raise ValueError(
+              'Number of layers in the intermediates are not consistent.'
+          )
+    return intermediate_num_layers
 
 @jax.tree_util.register_dataclass
 @dataclasses.dataclass
@@ -86,34 +106,47 @@ class TransformerIntermediates:
   embeddings: jax.Array | None = None
 
   # Intermediate activations of each layer.
-  layers: list[LayerIntermediates] = dataclasses.field(default_factory=list)
+  # layers: list[LayerIntermediates] = dataclasses.field(default_factory=list)
+  layers: LayerIntermediates = dataclasses.field(default_factory=LayerIntermediates)
 
   def merge(self, decoding_step, transformer: nnx.Module):
     """Merges the intermediate activations from one step."""
-    # if self.embeddings is not None:
-    #   try:
-    #     self.embeddings = self.embeddings.at[:, decoding_step + 1, ...].set(
-    #         transformer.embeddings.value[0][:, 0, ...]
-    #     )
-    #   except AttributeError as exc:
-    #     raise ValueError(
-    #         'Embeddings are not in the step intermediates.'
-    #     ) from exc
-    # if len(self.layers) != len(transformer.layers):
-    #   raise ValueError(
-    #       'Number of layers in the transformer and intermediates do not match.'
-    #   )
+    # print("merging transformer intermediates")
+    if self.embeddings is not None:
+      # print("self.embeddings", self.embeddings.shape)
+      # print("transformer.embeddings",transformer.embeddings.value[0].shape)
+      try:
+        self.embeddings = self.embeddings.at[:, decoding_step + 1, ...].set(
+            transformer.embeddings.value[0][:, 0, ...]
+        )
+      except AttributeError as exc:
+        raise ValueError(
+            'Embeddings are not in the step intermediates.'
+        ) from exc
+    
+    intermediate_num_layers = self.layers.num_layers
+    transformer_num_layers = transformer.layers.num_layers
+    # print("intermediate num_layers", intermediate_num_layers)
+    # print("transformer num layers", transformer_num_layers)
+    if intermediate_num_layers is not None and transformer_num_layers != intermediate_num_layers:
+      raise ValueError(
+          f'Number of layers in the transformer and intermediates do not match. \
+          Transformer has {transformer_num_layers} layers and intermediates has {intermediate_num_layers}'
+      )
     # for layer_intermediates, layer_module in zip(
     #     self.layers, transformer.layers
     # ):
-    #   layer_intermediates.merge(decoding_step, layer_module)
+    self.layers.merge(decoding_step, transformer.layers)
+    # print("done merging transformer intermediates")
 
   def trim(self, max_length: int):
     """Trims the intermediate activations to the given length."""
-    # if self.embeddings is not None:
-    #   self.embeddings = self.embeddings[:, :max_length, ...]
+    if self.embeddings is not None:
+      self.embeddings = self.embeddings[:, :max_length, ...]
+    self.layers.trim(max_length)
     # for layer in self.layers:
-    #   layer.trim(max_length)
+      # layer.trim(max_length)
+    
 
 
 @dataclasses.dataclass(frozen=True)
