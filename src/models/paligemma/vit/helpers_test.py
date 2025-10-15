@@ -21,7 +21,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from flax import nnx
 import flax.linen as nn
-import helpers
+from vit import helpers
 import jax
 import jax.numpy as jnp
 import numpy as np

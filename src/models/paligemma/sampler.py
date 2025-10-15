@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-"""Sampler for Gemma transformer.
+"""Sampler for PaliGemma transformer.
 
-An example of a sampling class for a Gemma model.
+An example of a sampling class for a PaliGemma model.
 """
 
 from __future__ import annotations
@@ -24,13 +24,16 @@ import dataclasses
 
 import flax
 from flax import nnx
-from gemma import modules
-from gemma import sow_lib
-from gemma import transformer as transformer_lib
 from flax.nnx import graph
 from flax.nnx import statelib
 import jax
 import jax.numpy as jnp
+
+from gemma import modules
+# from vit import sow_lib
+from PIL import Image
+import numpy as np
+import transformer as transformer_lib
 
 import sentencepiece as spm
 
@@ -49,33 +52,49 @@ def _sample_top_p(probs: jnp.ndarray, p: float, key: jax.Array) -> jnp.ndarray:
   next_token = jnp.squeeze(next_token, axis=-1)
   return next_token
 
-
-def _compute_attention_masks(
-    time_step: jax.Array, seq_len: int, input_mask: jax.Array
-) -> jax.Array:
-  """Computes causal attention mask."""
+#TODO: Validate this.
+def _compute_paligemma_attention_mask(
+    time_step: jax.Array,
+    seq_len: int, #text_cache_size
+    img_len: int,
+    input_mask: jax.Array
+) -> jnp.ndarray:
+  """Return [B,1,img_len+seq_len] with True=keep."""
+  # print("input mask shape:", input_mask.shape)
+  # print("time step:", time_step.shape)
+  # print("img len", img_len)
   batch_size = input_mask.shape[0]
-  batch_time_step = jnp.full((batch_size, 1), time_step, dtype=jnp.uint32)
+  batch_time_step = jnp.full(
+    (batch_size, 1),
+    time_step,
+    dtype=jnp.uint32
+  ) # (B,1) a column vector where all values are timestep.
   causal_padding = jnp.greater(
-      jnp.expand_dims(jnp.arange(seq_len), 0), batch_time_step
-  )
+      jnp.expand_dims(jnp.arange(seq_len), 0),
+      # Expand to (1,S) and compare with (B,1) → broadcasts to (B,S)
+      batch_time_step
+  ) # (B,S) vector with true for Future keys -> causal mask
   max_seq_len = min(input_mask.shape[-1], seq_len)
+  # lets you cut out a sub-array whose start index is computed at runtime
   input_mask = jax.lax.dynamic_slice(
       input_mask,
+      # length-N tuple/array of integer starts
       (0, jnp.maximum(time_step - seq_len + 1, 0)),
-      (batch_size, max_seq_len),
-  )
+      (batch_size, max_seq_len), # slice sizes
+  ) # t: extract the window of PAD flags that aligns with the last seq_len
+    # keys ending at time_step, producing [B, max_seq_len
   input_mask = (
       jnp.zeros((batch_size, seq_len), dtype=jnp.bool_)
       .at[:, :max_seq_len]
       .set(input_mask)
-  )
+  ) # paste this into a zero array to make it exactly [B, seq_len]
+  causal_padding = ~jnp.logical_or(causal_padding, input_mask)
+  visible_img = jnp.ones((batch_size, img_len), dtype=jnp.bool_)
+  keep = jnp.concatenate([visible_img, causal_padding], axis=-1)
+  # Add a singleton query axis → (B, 1, S). Many attention kernels expect [B, Q, K]
+  attention_mask = keep[:, jnp.newaxis, :].astype(jnp.bool_)
 
-  causal_padding = jnp.logical_or(causal_padding, input_mask)
-  attention_mask = causal_padding[:, jnp.newaxis, :].astype(jnp.bool_)
-
-  return ~attention_mask
-
+  return attention_mask
 
 @flax.struct.dataclass
 class _SamplingState:
@@ -94,7 +113,8 @@ class _SamplingState:
   positions: jnp.ndarray  # [B, L]
 
   # Model state for conditioning the model on autoregressively.
-  cache: modules.LayerCache# cache: dict[str, modules.LayerCache] # NOTE: Modified
+  cache: modules.LayerCache # NOTE: Modified
+  # cache: dict[str, modules.LayerCache]
 
   # Is decoding done on the given sequence?
   done: jnp.ndarray  # [B]
@@ -109,7 +129,8 @@ class _SamplingState:
   forbidden_token_ids: Sequence[int] | None
 
   # Intermediate activations from the model if requested.
-  intermediates: sow_lib.TransformerIntermediates | None
+  # TODO: sow intermediates
+  intermediates: None #sow_lib.TransformerIntermediates | None
 
   # Random seed for sampling.
   seed: jax.Array
@@ -120,6 +141,11 @@ class _SamplingState:
   # Top-p sampling threshold.
   top_p: float = flax.struct.field(pytree_node=False)
 
+  # Image
+  zimg: jnp.ndarray | None = None      # [B, Zi, D] image prefix tokens (fixed)
+
+  # Image length.
+  # img_len: jnp.int32 = jnp.int32(0)    # Zi
 
 @dataclasses.dataclass
 class SamplerOutput:
@@ -135,7 +161,7 @@ class SamplerOutput:
   tokens: list[list[int]]
 
   # Intermediate activations from the model if requested.
-  intermediates: sow_lib.TransformerIntermediates | None = None
+  intermediates: None #sow_lib.TransformerIntermediates | None = None # TODO
 
 
 class Sampler:
@@ -143,14 +169,14 @@ class Sampler:
 
   def __init__(
       self,
-      transformer: transformer_lib.Transformer,
+      transformer: transformer_lib.PaliGemmaTransformer,
       vocab: spm.SentencePieceProcessor,
       cache_size: int = 1024,
   ):
-    """Initializes a sampler for a Gemma model.
+    """Initializes a sampler for a PaliGemma model.
 
     Args:
-      transformer: an instance of the Gemma transformer.
+      transformer: an instance of the PaliGemma transformer.
       vocab: vocabulary of the given model.
       cache_size: size of the cache for the transformer.
     """
@@ -165,7 +191,7 @@ class Sampler:
     self._compiled_sample_fn = jax.jit(self._sample_fn)
 
   @property
-  def transformer(self) -> transformer_lib.Transformer:
+  def transformer(self) -> transformer_lib.PaliGemmaTransformer:
     return nnx.merge(self._transformer_graphdef, self._transformer_state)
 
   @property
@@ -203,6 +229,55 @@ class Sampler:
         nnx.to_flat_state(self._transformer_state)
     )[0].dtype
 
+  # TODO verify correctness
+  def _prefill_cache(
+      self,
+      params: statelib.State,
+      images: Sequence[jnp.ndarray],
+      all_input_ids: list[jax.Array],
+      max_new_tokens: int,
+  ):
+    """Prefill cache with image + text prompt
+     return (cache, zimg, Zi, lens)."""
+    transformer = nnx.merge(self._transformer_graphdef, params)
+
+    # 1) Encode image prefix once (fixed across decoding)
+    zimg = transformer.embed_image(images)        # [B, Zi, D] TODO check shape
+    img_len = zimg.shape[1]
+    batch_size = len(all_input_ids)
+
+    # 2) Build dense prompt matrix [B, P] and lengths
+    pad = self.vocab.pad_id()
+    max_id_len = max(len(ids) for ids in all_input_ids)
+    prompt_mat = jnp.full((batch_size, max_id_len), pad, dtype=jnp.int32)
+    lens = []
+    for i, ids in enumerate(all_input_ids):
+      prompt_mat = prompt_mat.at[i, : len(ids)].set(ids)
+      lens.append(len(ids))
+    lens = jnp.array(lens, dtype=jnp.int32)
+
+    # 3) Global positions for prompt (offset by Zi)
+    # text_positions = jnp.arange(
+    # max_id_len, dtype=jnp.int32)[None, :].repeat(batch_size, 0)
+    # global_positions = text_positions + img_len  # [B, P]
+
+    # 3) Ask model to prefill cache.
+    # cache_size must cover Zi + P + max_new_tokens
+    cache_size = img_len + max_id_len + max_new_tokens
+    cache = transformer.llm.init_cache(
+        cache_size=cache_size,
+        batch_size=batch_size,
+        dtype=self.dtype,
+    )
+    x, input_mask, mask_ar = \
+      transformer.embed_image_and_text(images, all_input_ids)
+
+    _, cache = transformer.prefill_cache( # TODO should the logits be used?
+      x, input_mask, mask_ar,
+      cache, cache_size=cache_size, num_patches=img_len)
+
+    return cache, zimg, img_len, lens
+
   def _sample_step(
       self, params: statelib.State, sampler_state: _SamplingState
   ) -> _SamplingState:
@@ -210,24 +285,42 @@ class Sampler:
     batch_size = sampler_state.token_buffer.shape[0]
     decoding_step = jnp.asarray(sampler_state.decoding_step, dtype=jnp.int32)
     last_token = sampler_state.token_buffer[:, decoding_step]
-    input_mask = sampler_state.token_buffer == self.vocab.pad_id()
-    attention_mask = _compute_attention_masks(
-        decoding_step, self.cache_size, input_mask
+
+    # text_keep_mask: True where text keys are valid (not PAD)
+    text_keep_mask = (sampler_state.token_buffer != self.vocab.pad_id())
+    text_keep_mask = text_keep_mask[:, : self.cache_size]  # safety
+
+    # print("decoding step", decoding_step)
+    # print("img len", sampler_state.img_len)
+    attention_mask = _compute_paligemma_attention_mask( # TODO change
+      time_step=decoding_step,
+      seq_len=self.text_cache_len,
+      img_len=self.img_len_static,
+      input_mask=text_keep_mask, # TODO rename to text_keep_mask
     )
-    step_positions = jnp.expand_dims(
-        sampler_state.positions[:, decoding_step], -1
-    )
+
+    # GLOBAL position = image offset + local text position
+    # TODO: review this
+    step_positions = (sampler_state.positions[:, decoding_step]+ self.img_len_static)[..., None]  # [B,1]
+
+    # step_positions = jnp.expand_dims(
+    #     sampler_state.positions[:, decoding_step], -1
+    # )
+
     last_token = last_token.reshape((batch_size, 1))
 
     transformer = nnx.merge(self._transformer_graphdef, params)
-    logits, cache = transformer(
-        last_token,
-        step_positions,
-        sampler_state.cache,
-        attention_mask,
+
+    # IMPORTANT: now that image+prompt are already in the cache,
+    # we *only* step the LLM with the *new text token*.
+    
+    logits, new_cache = transformer.llm(
+        last_tokens=last_token,
+        positions=step_positions,
+        cache=sampler_state.cache,
+        attention_mask=attention_mask,
     )
-    # print("cache", cache)
-    # print("logits", logits)
+
     if sampler_state.forbidden_token_ids:
       logits = logits.at[:, :, sampler_state.forbidden_token_ids].set(-jnp.inf)
 
@@ -273,14 +366,13 @@ class Sampler:
     done = sampler_state.done | jnp.equal(
         token_buffer[:, decoding_step + 1], self.vocab.eos_id()
     )
-
     return _SamplingState(
         decoding_step=sampler_state.decoding_step + 1,
         num_input_tokens=sampler_state.num_input_tokens,
         token_buffer=token_buffer,
         positions=sampler_state.positions,
         logits_buffer=logits_buffer,
-        cache=cache,
+        cache=new_cache,
         done=done,
         total_sampling_steps=sampler_state.total_sampling_steps,
         forbidden_token_ids=sampler_state.forbidden_token_ids,
@@ -288,6 +380,7 @@ class Sampler:
         temperature=sampler_state.temperature,
         top_p=sampler_state.top_p,
         seed=sampler_state.seed,
+        zimg=sampler_state.zimg,
     )
 
   def init_sample_state(
@@ -299,6 +392,11 @@ class Sampler:
       temperature: float,
       top_p: float,
       seed: jax.Array,
+      decoding_step: jnp.int32,
+      cache: modules.LayerCache,
+      zimg: jnp.ndarray,
+      # img_len: jnp.int32,
+
   ) -> _SamplingState:
     """Initializes the sampling state given input prompts."""
     batch_size = len(all_input_ids)
@@ -327,23 +425,18 @@ class Sampler:
 
     if include_logits:
       logits_buffer = jnp.zeros(
-          (batch_size, buffer_size, self.transformer.num_embed),
+          (batch_size, buffer_size, self.transformer.llm.num_embed),
           dtype=jnp.float32,
       )
     else:
       logits_buffer = None
 
     return _SamplingState(
-        decoding_step=0,
         num_input_tokens=jnp.array(num_input_tokens, dtype=jnp.int32),
         token_buffer=token_buffer,
         positions=positions,
         logits_buffer=logits_buffer,
-        cache=self.transformer.init_cache(
-            cache_size=self.cache_size,
-            batch_size=batch_size,
-            dtype=self.dtype,
-        ),
+        cache=cache, # TODO verify
         done=done,
         total_sampling_steps=total_sampling_steps,
         forbidden_token_ids=forbidden_token_ids,
@@ -353,6 +446,8 @@ class Sampler:
         temperature=temperature,
         top_p=top_p,
         seed=seed,
+        decoding_step=decoding_step,
+        zimg=zimg,
     )
 
   def tokenize(self, input_string: str) -> jax.Array:
@@ -362,6 +457,13 @@ class Sampler:
         [self.vocab.bos_id()] + jnp.array(input_ids).tolist(), dtype=jnp.int32
     )
     return input_ids
+
+  # TODO: refactor this function
+  def load_and_preprocess_image(self, image_path, target_size=(224, 224)) -> jnp.ndarray:
+    """Loads and normalizes an image to [0, 1] float32 tensor."""
+    img = Image.open(image_path).convert("RGB").resize(target_size)
+    img_np = np.array(img) / 255.0
+    return jnp.array(img_np, dtype=jnp.float32)
 
   def mask_tokens_after_eos_ids(self, token_buffer):
     """Mask token IDs after the EOS token with the padding ID."""
@@ -402,6 +504,7 @@ class Sampler:
   def __call__(
       self,
       input_strings: Sequence[str],
+      images: Sequence[jnp.ndarray], # TODO verify correctness
       total_generation_steps: int,
       echo: bool = False,
       return_logits: bool = True,
@@ -446,7 +549,18 @@ class Sampler:
     if seed is None:
       seed = jax.random.PRNGKey(0)
     # print("Initializing sample state")
-    initial_sampling_state = self.init_sample_state(
+
+    cache, zimg, img_len, lens = self._prefill_cache(
+        self._transformer_state,
+        images=images,
+        all_input_ids=all_input_ids,
+        max_new_tokens=total_generation_steps,
+    )
+    self.img_len_static = int(img_len)
+    self.text_cache_len = int((img_len + max(lens) + total_generation_steps) - img_len)
+    # Start at the max prompt length – 1 for the batch
+    start_step = (jnp.max(lens) - 1).astype(jnp.int32)
+    init_state = self.init_sample_state(
         all_input_ids,
         include_logits=return_logits,
         total_sampling_steps=total_sampling_steps,
@@ -454,18 +568,20 @@ class Sampler:
         temperature=temperature,
         top_p=top_p,
         seed=seed,
+        decoding_step=start_step,           # we prefilled up to t = Zi+P-1
+        cache=cache,
+        zimg=zimg,
+        # img_len=img_len
     )
 
-    # print("Sampling")
     sampling_state = self._compiled_sample_fn(
-        self._transformer_state, initial_sampling_state
+        self._transformer_state, init_state
     )
 
     masked_token_buffer = self.mask_tokens_after_eos_ids(
         sampling_state.token_buffer
     )
 
-    
     out_tokens = []
     out_logits = []
     for i, (token_buffer, num_tokens) in enumerate(
@@ -474,8 +590,7 @@ class Sampler:
             sampling_state.num_input_tokens,
         )
     ):
-      # print("token_buffer", token_buffer)
-      # print("num_tokens", num_tokens)
+
       start_idx = 0 if echo else num_tokens
       out_tokens.append(token_buffer[start_idx:total_sampling_steps].tolist())
       if return_logits:
@@ -485,8 +600,6 @@ class Sampler:
         )
 
     decoded_outputs = [self.vocab.DecodeIds(tokens) for tokens in out_tokens]
-    # print("decoded_outputs", decoded_outputs)
-    # print("out_tokens", out_tokens)
 
     if sampling_state.intermediates is not None:
       sampling_state.intermediates.trim(total_sampling_steps)

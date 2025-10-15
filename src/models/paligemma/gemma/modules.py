@@ -21,11 +21,12 @@ import enum
 from typing import Any, Union
 
 from flax import nnx
-import layers
-import positional_embeddings
-import sow_lib
+from gemma import layers
+from gemma import positional_embeddings
+from gemma import sow_lib
 import flax.linen as nn
 import jax
+import jax.debug
 import jax.numpy as jnp
 from jaxtyping import Array, ArrayLike  # pylint: disable=g-importing-member,g-multiple-import
 
@@ -170,8 +171,16 @@ class Attention(nnx.Module):
 
     # Cache is left aligned.
     if cache is not None:
-      end_index = cache['end_index'][0]
+      # jax.debug.print("=== Attention cache update ===")
+      # jax.debug.print("Cache end_index shape: {}", cache['end_index'].shape)
+      # jax.debug.print("Cache v shape: {}", cache['v'].shape)
+      # jax.debug.print("Cache k shape: {}", cache['k'].shape)
+      # jax.debug.print("Current end_index: {}", cache['end_index'])
+      end_index = cache['end_index'][0] # NOTE:
       slice_indices = (0, end_index % cache['v'].shape[1], 0, 0)
+      # jax.debug.print("Slice indices: {}", slice_indices)
+      # jax.debug.print("Value_proj shape: {}", value_proj.shape)
+      # jax.debug.print("Key_proj shape: {}", key_proj.shape)
       value_proj = jax.lax.dynamic_update_slice(
           cache['v'],
           value_proj,
@@ -371,12 +380,20 @@ class Block(nnx.Module):
 
     # Attention.
     attn_inputs = self.pre_attention_norm(x)
+    # jax.debug.print("=== Block processing ===")
+    # jax.debug.print("Input cache: {}", cache)
+    # if cache is not None:
+    #     print(f"Cache shapes - k: {cache['k'].shape}, v: {cache['v'].shape}, end_index: { cache['end_index'].shape}")
     cache, attn_output = self.attn(
         attn_inputs,
         segment_pos,
         cache,
         attn_mask,
     )
+    # jax.debug.print("Output cache: {}", cache)
+    # if cache is not None:
+    #     jax.debug.print("Output cache shapes - k: {}, v: {}, end_index: {}", 
+    #                    cache['k'].shape, cache['v'].shape, cache['end_index'])
     if self.post_attention_norm is not None:
       attn_output = self.post_attention_norm(attn_output)
     x += attn_output

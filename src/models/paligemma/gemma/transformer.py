@@ -23,12 +23,13 @@ import functools
 from typing import Any
 
 from flax import nnx
-import helpers
-import layers
-import modules
-import params as params_lib
-import sow_lib
+from gemma import helpers
+from gemma import layers
+from gemma import modules
+from gemma import params as params_lib
+from gemma import sow_lib
 import jax
+import jax.debug
 import jax.numpy as jnp
 from jaxtyping import Array  # pylint: disable=g-importing-member,g-multiple-import
 
@@ -459,6 +460,10 @@ class Transformer(nnx.Module):
         assign_val_fn=assign_val_fn,
     )
 
+  def compute_logits(self, pre_logits):
+    logits = self.embedder.decode(pre_logits)
+    return logits
+
   def __init__(
       self,
       config: TransformerConfig,
@@ -512,6 +517,9 @@ class Transformer(nnx.Module):
       positions: Array,  # [B, L]
       cache: modules.LayerCache | None,  # (sequence length L')
       attention_mask: Array,  # [B, L, L']
+      embeddings: Array = None,
+      encode_tokens: bool = True,
+      return_pre_logits: bool = False,
   ) -> tuple[Array, modules.LayerCache | None]:
     """Transformer forward pass.
 
@@ -532,25 +540,56 @@ class Transformer(nnx.Module):
     """
     @nnx.split_rngs(splits=self.num_layers)
     @nnx.scan(in_axes=(nnx.Carry, 0, 0), out_axes=(nnx.Carry, 0))
-    def forward_block(x, cache: modules.LayerCache, block: modules.Block):
+    def forward_block(x, block: modules.Block, cache):
+      # Each layer should get its own slice of the cache
+      # The scan automatically handles this when cache is passed as scan input
+      # print(f"k shape: {k.shape}")
+      # print(f"v shape: {v.shape}")
+      # print(f"end_index shape: {end_index.shape}")
+      # cache: modules.LayerCache = {'k': k, 'v': v, 'end_index': end_index}
+      # jax.debug.print("Processing layer with cache: {}", cache)
       new_cache, x = block(x, positions, cache, attention_mask)
-      return x, new_cache
+      # print(f"new_cache shape: {new_cache['k'].shape}")
+      # print(f"new_cache shape: {new_cache['v'].shape}")
+      # print(f"new_cache shape: {new_cache['end_index'].shape}")
+      # jax.debug.print("Layer output cache: {}", new_cache)
+      return x, new_cache#new_cache['k'], new_cache['v'], new_cache['end_index']
 
     new_cache = None if cache is None else {}
-    x = self.embedder.encode(last_tokens)
+
+    x = embeddings if not encode_tokens else self.embedder.encode(last_tokens)
     self.sow_config.maybe_sow_embeddings(x, self)
 
-    x, cache = forward_block(x, cache, self.layers)
+    # jax.debug.print("Initial cache: {}", cache.keys if cache else None)
+    # jax.debug.print("Initial layers: {}", self.layers)
+    # jax.debug.print("Cache shapes: {}", cache['v'].shape)
+    # jax.debug.print("x {}", x.shape)
+    # jax.debug.print("layers {}", self.layers)
+
+    # print(f"Cache shapes: {cache['v'].shape}")
+    # print(f"Cache shapes: {cache['end_index'].shape}")
+    # print(f"Attention mask shape: {attention_mask.shape} ")
+    
+
+    x, cache = forward_block(x, self.layers, cache)
     if cache is not None:
       new_cache = cache
 
+    # jax.debug.print("Final new cache: {}", new_cache.keys if new_cache else None)
+    # jax.debug.print("Final  cache: {}", cache.keys if cache else None)
+    # jax.debug.print("Post Block X: {}", x)
+    # print(f"Post Block X shape: {x.shape}")
+
     x = self.final_norm(x)
-    logits = self.embedder.decode(x)
+    if return_pre_logits:
+      return x, new_cache
+    logits = self.compute_logits(x)
 
     if self.final_logits_softcap is not None:
       logits /= self.final_logits_softcap
       logits = jnp.tanh(logits) * self.final_logits_softcap
 
+    # jax.debug.print("final logits: {}", logits)
     return logits, new_cache  # pytype: disable=bad-return-type
 
   @property

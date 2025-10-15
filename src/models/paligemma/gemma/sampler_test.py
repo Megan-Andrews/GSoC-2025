@@ -18,10 +18,10 @@ from collections.abc import Iterable
 
 from absl.testing import absltest
 from flax import nnx
-import modules
-import sampler as sampler_lib
-import sow_lib
-import transformer as transformer_lib
+from gemma import modules
+from gemma import sampler as sampler_lib
+from gemma import sow_lib
+from gemma import transformer as transformer_lib
 import jax
 import jax.numpy as jnp
 import numpy as np

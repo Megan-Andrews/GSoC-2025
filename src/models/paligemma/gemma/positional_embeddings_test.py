@@ -16,7 +16,7 @@
 
 from absl.testing import absltest
 from absl.testing import parameterized
-import positional_embeddings
+from gemma import positional_embeddings
 import jax
 import jax.numpy as jnp
 import numpy as np

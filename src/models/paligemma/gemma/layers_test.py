@@ -17,7 +17,7 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import nnx
-import layers
+from gemma import layers
 import jax.numpy as jnp
 import numpy as np
 

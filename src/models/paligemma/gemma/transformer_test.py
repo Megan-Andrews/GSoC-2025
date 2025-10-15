@@ -18,9 +18,9 @@ from collections import defaultdict
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import nnx
-import modules
-import sow_lib
-import transformer as transformer_lib
+from gemma import modules
+from gemma import sow_lib
+from gemma import transformer as transformer_lib
 import jax.numpy as jnp
 import numpy as np
 
@@ -247,13 +247,13 @@ class TransformerTest(parameterized.TestCase):
               head_dim=4,
               num_kv_heads=3,
               final_logit_softcap=None,
-              attention_types=[modules.AttentionType.GLOBAL] * 2,
+              attention_types=[modules.AttentionType.GLOBAL] * 4,
               use_post_attn_norm=False,
               use_post_ffw_norm=False,
           ),
           cache_size=2,
           keys=['end_index', 'k', 'v'],
-          k_shape=(2, 1, 2, 3, 4),
+          k_shape=(2, 1, 2, 3, 4), # num_layers, batch_size, cache_size, num_heads, head_dim
           v_shape=(2, 1, 2, 3, 4),
       )
   ])

@@ -23,10 +23,10 @@ import dataclasses
 from flax import nnx
 import jax
 import jax.numpy as jnp
-import helpers
-import params as params_lib
-import modules
-from modules import Encoder
+from vit import helpers
+from vit import params as params_lib
+from vit import modules
+from vit.modules import Encoder
 
 @dataclasses.dataclass(frozen=True)
 class VisionTransformerConfig:
@@ -185,7 +185,7 @@ class VisionTransformer(nnx.Module):
     image = jnp.asarray(image, self.dtype_mm)
     x = out["stem"] = self.embedding(image)
     n, h, w, c = x.shape
-    print(x.shape)
+    # print(x.shape)
     x = jnp.reshape(x, [n, h * w, c])
     x = out["with_posemb"] = x + self.pos_embedding
 

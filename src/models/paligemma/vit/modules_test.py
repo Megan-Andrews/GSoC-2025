@@ -17,7 +17,7 @@
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import nnx
-import modules
+from vit import modules
 import jax
 import jax.numpy as jnp
 import numpy as np
