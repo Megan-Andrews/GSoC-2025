@@ -64,6 +64,10 @@ The codebase is organized into three top-level components under the paligemma/ p
         Original: Plain causal mask for text; it slices the visible window and inverts to a keep-mask per step.
         (PaliGemma): Introduced _compute_paligemma_attention_mask that prepends always-visible image tokens and then applies causal text visibility, producing a [B,1, Zi+S] keep-mask (image visible + causal text).
         
+## Current State of the Code:
+- 
+
+
 ## What remains to be done:
 - Add sow intermediate function for the ViT
 - Add more configurations for PaliGemma
