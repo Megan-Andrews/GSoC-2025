@@ -1,7 +1,7 @@
-PaliGemma (Flax / JAX / NNX)
+# PaliGemma (Flax / JAX / NNX)
 An educational and test-covered Flax/NNX implementation of PaliGemma, Google’s vision-language model combining a ViT encoder and a Gemma-style decoder.
 
-Overview
+## Overview
 
 PaliGemma integrates a Vision Transformer (ViT) with a Gemma language model to process images and text jointly. 
 The codebase is organized into three top-level components under the paligemma/ package:
@@ -11,12 +11,13 @@ The codebase is organized into three top-level components under the paligemma/ p
 | **`paligemma/vit/`**    | The **Vision Transformer (ViT)** encoder, used to embed image patches before concatenation with text tokens. Includes its own transformer and module tests.                                                             |
 | **`paligemma/` (root)** | The **multimodal integration layer**, combining ViT and Gemma into `PaliGemmaTransformer`, along with a unified `Sampler`, `sow_lib.py`, and parameter conversion utilities.                                            |
 
-notebooks/           # Jupyter notebooks for demos, experiments, or visualization
+notebooks/                    # Jupyter notebooks for demos, experiments, or visualization
 │
 src/
 └── models/
-    ├── gemma/       # Orignial Gemma implementation for reference
-    └── paligemma/        
+    ├── gemma/                # Original Gemma implementation for reference
+    │
+    └── paligemma/
         ├── gemma/
         │   ├── debug.py
         │   ├── helpers.py
@@ -55,4 +56,3 @@ src/
         ├── test_all.py
         ├── transformer.py
         └── transformer_test.py
-
