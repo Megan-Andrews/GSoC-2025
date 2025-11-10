@@ -11,6 +11,7 @@ The codebase is organized into three top-level components under the paligemma/ p
 | **`paligemma/vit/`**    | The **Vision Transformer (ViT)** encoder, used to embed image patches before concatenation with text tokens. Includes its own transformer and module tests.                                                             |
 | **`paligemma/` (root)** | The **multimodal integration layer**, combining ViT and Gemma into `PaliGemmaTransformer`, along with a unified `Sampler`, `sow_lib.py`, and parameter conversion utilities.                                            |
 
+```bash
 notebooks/                    # Jupyter notebooks for demos, experiments, or visualization
 │
 src/
@@ -56,3 +57,4 @@ src/
         ├── test_all.py
         ├── transformer.py
         └── transformer_test.py
+```
