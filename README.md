@@ -65,14 +65,19 @@ The codebase is organized into three top-level components under the paligemma/ p
         (PaliGemma): Introduced _compute_paligemma_attention_mask that prepends always-visible image tokens and then applies causal text visibility, producing a [B,1, Zi+S] keep-mask (image visible + causal text).
         
 ## Current State of the Code:
-- 
-
-
+- Functional, refactored implementation of Gemma, Vision Transformer (ViT)
+- PaliGemma integration in progress — architecture implemented but not yet fully verified
+- Supports loading pretrained weights into all model variants
+- Includes comprehensive test coverage for the models and the sampler
+  
 ## What remains to be done:
-- Add sow intermediate function for the ViT
-- Add more configurations for PaliGemma
-- Add Example Notebook for using Gemma/PaliGemma Notebooks
-- Add Example Notebook for capturing/visualizing intermediates
+- Implement sowing of intermediate activations in the Vision Transformer (ViT)
+- Extend configuration options for the PaliGemma model
+- Create example notebooks demonstrating Gemma and PaliGemma usage
+- Add an example notebook for capturing and visualizing model intermediates
+
+## Acknowledgments:
+Huge thanks to Mayuresh for providing continuous support throughout!
     
 ```bash
 notebooks/                    # Jupyter notebooks for demos, experiments, or visualization
