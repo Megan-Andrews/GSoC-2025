@@ -94,7 +94,7 @@ class _SamplingState:
   positions: jnp.ndarray  # [B, L]
 
   # Model state for conditioning the model on autoregressively.
-  cache: dict[str, modules.LayerCache]
+  cache: modules.LayerCache# cache: dict[str, modules.LayerCache] # NOTE: Modified
 
   # Is decoding done on the given sequence?
   done: jnp.ndarray  # [B]
@@ -226,6 +226,8 @@ class Sampler:
         sampler_state.cache,
         attention_mask,
     )
+    # print("cache", cache)
+    # print("logits", logits)
     if sampler_state.forbidden_token_ids:
       logits = logits.at[:, :, sampler_state.forbidden_token_ids].set(-jnp.inf)
 
@@ -245,11 +247,13 @@ class Sampler:
     else:
       next_token_candidate = sample_best(logits)
 
+    # print("next token candidate before", next_token_candidate)
     next_token_candidate = jnp.where(
         decoding_step < sampler_state.num_input_tokens - 1,
         sampler_state.token_buffer[:, decoding_step + 1],
         next_token_candidate,
     )
+    # print("next token candidate after", next_token_candidate)
 
     token_buffer = sampler_state.token_buffer.at[:, decoding_step + 1].set(
         next_token_candidate
@@ -386,6 +390,7 @@ class Sampler:
       return self._sample_step(params, sampler_state)
 
     def cond_fn(sampler_state: _SamplingState):
+      # print("Sample step ", sampler_state.decoding_step)
       return (
           sampler_state.decoding_step < sampler_state.total_sampling_steps
       ) & jnp.any(jnp.logical_not(sampler_state.done))
@@ -422,6 +427,7 @@ class Sampler:
     Returns:
       sampler_output: A SamplerOutput object containing the generated samples.
     """
+    # print("Calling Sampler")
     forbidden_token_ids = None
     if forbidden_tokens is not None:
       forbidden_token_ids = []
@@ -439,6 +445,7 @@ class Sampler:
 
     if seed is None:
       seed = jax.random.PRNGKey(0)
+    # print("Initializing sample state")
     initial_sampling_state = self.init_sample_state(
         all_input_ids,
         include_logits=return_logits,
@@ -449,6 +456,7 @@ class Sampler:
         seed=seed,
     )
 
+
     sampling_state = self._compiled_sample_fn(
         self._transformer_state, initial_sampling_state
     )
@@ -457,6 +465,7 @@ class Sampler:
         sampling_state.token_buffer
     )
 
+    
     out_tokens = []
     out_logits = []
     for i, (token_buffer, num_tokens) in enumerate(
@@ -465,6 +474,8 @@ class Sampler:
             sampling_state.num_input_tokens,
         )
     ):
+      # print("token_buffer", token_buffer)
+      # print("num_tokens", num_tokens)
       start_idx = 0 if echo else num_tokens
       out_tokens.append(token_buffer[start_idx:total_sampling_steps].tolist())
       if return_logits:
@@ -474,6 +485,8 @@ class Sampler:
         )
 
     decoded_outputs = [self.vocab.DecodeIds(tokens) for tokens in out_tokens]
+    # print("decoded_outputs", decoded_outputs)
+    # print("out_tokens", out_tokens)
 
     if sampling_state.intermediates is not None:
       sampling_state.intermediates.trim(total_sampling_steps)

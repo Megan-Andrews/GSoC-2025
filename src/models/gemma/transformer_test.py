@@ -53,7 +53,7 @@ def create_fake_params(config: transformer_lib.TransformerConfig):
           (config.num_heads, config.embed_dim, config.head_dim)
       )
       params[f'layer_{layer_idx}']['attn']['kv_einsum']['w'] = jnp.ones(
-          (config.num_kv_heads, config.embed_dim, config.head_dim)
+          (2, config.num_kv_heads, config.embed_dim, config.head_dim)
       )
 
     # 4. feedforward block params

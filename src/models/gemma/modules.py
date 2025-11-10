@@ -146,7 +146,9 @@ class Attention(nnx.Module):
       query_proj, key_proj, value_proj = self.qkv_einsum(x)
     else:
       query_proj = self.q_einsum(x)
-      key_proj, value_proj = self.kv_einsum(x)
+      kv_output = self.kv_einsum(x)  # Shape: (C, B, S, K, H)
+      key_proj = kv_output[0]  # Shape: (B, S, K, H)
+      value_proj = kv_output[1]  # Shape: (B, S, K, H)
 
     if self.use_qk_norm:
       query_proj = self._query_norm(query_proj)
@@ -170,8 +172,16 @@ class Attention(nnx.Module):
 
     # Cache is left aligned.
     if cache is not None:
-      end_index = cache['end_index'][0]
+      # jax.debug.print("=== Attention cache update ===")
+      # jax.debug.print("Cache end_index shape: {}", cache['end_index'].shape)
+      # jax.debug.print("Cache v shape: {}", cache['v'].shape)
+      # jax.debug.print("Cache k shape: {}", cache['k'].shape)
+      # jax.debug.print("Current end_index: {}", cache['end_index'])
+      end_index = cache['end_index'][0] # NOTE:
       slice_indices = (0, end_index % cache['v'].shape[1], 0, 0)
+      # jax.debug.print("Slice indices: {}", slice_indices)
+      # jax.debug.print("Value_proj shape: {}", value_proj.shape)
+      # jax.debug.print("Key_proj shape: {}", key_proj.shape)
       value_proj = jax.lax.dynamic_update_slice(
           cache['v'],
           value_proj,
@@ -328,6 +338,7 @@ class Block(nnx.Module):
       sow_config: sow_lib.SowConfig = sow_lib.SowConfig()
   ):
     self.pre_attention_norm = layers.RMSNorm(embed_dim, rngs=rngs)
+    
     self.attn = Attention(
         num_heads=num_heads,
         num_kv_heads=num_kv_heads,
@@ -371,12 +382,20 @@ class Block(nnx.Module):
 
     # Attention.
     attn_inputs = self.pre_attention_norm(x)
+    # jax.debug.print("=== Block processing ===")
+    # jax.debug.print("Input cache: {}", cache)
+    if cache is not None:
+        print(f"Cache shapes - k: {cache['k'].shape}, v: {cache['v'].shape}, end_index: { cache['end_index'].shape}")
     cache, attn_output = self.attn(
         attn_inputs,
         segment_pos,
         cache,
         attn_mask,
     )
+    # jax.debug.print("Output cache: {}", cache)
+    # if cache is not None:
+    #     jax.debug.print("Output cache shapes - k: {}, v: {}, end_index: {}", 
+    #                    cache['k'].shape, cache['v'].shape, cache['end_index'])
     if self.post_attention_norm is not None:
       attn_output = self.post_attention_norm(attn_output)
     x += attn_output

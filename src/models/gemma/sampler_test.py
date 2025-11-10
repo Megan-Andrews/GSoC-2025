@@ -148,6 +148,7 @@ class SamplerTest(absltest.TestCase):
     transformer = transformer_lib.Transformer(
         transformer_config, rngs=nnx.Rngs(params=0)
     )
+    # print(jax.tree_util.tree_structure(nnx.state(transformer, nnx.Param)))
     sampler = sampler_lib.Sampler(
         transformer=transformer,
         vocab=vocab,
@@ -159,6 +160,8 @@ class SamplerTest(absltest.TestCase):
     new_transformer = transformer_lib.Transformer(
         transformer_config, rngs=nnx.Rngs(params=42)
     )
+    # print(jax.tree_util.tree_structure(nnx.state(new_transformer, nnx.Param)))
+    # print(jax.tree_util.tree_structure(nnx.state(transformer, nnx.Param)) == jax.tree_util.tree_structure(nnx.state(new_transformer, nnx.Param)))
     sampler.transformer_state = nnx.state(new_transformer, nnx.Param)
     new_logits = sampler(input_strings, total_generation_steps=10).logits
     with self.assertRaises(AssertionError):

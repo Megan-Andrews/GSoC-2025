@@ -23,6 +23,7 @@ import functools
 from typing import Any
 
 from flax import nnx
+import jax
 import helpers
 import layers
 import modules
@@ -524,6 +525,7 @@ class Transformer(nnx.Module):
     new_cache = None if cache is None else {}
     x = self.embedder.encode(last_tokens)
     self.sow_config.maybe_sow_embeddings(x, self)
+    jax.debug.print("Initial cache: {}", cache)
     for i, layer in enumerate(self.layers):
       layer_name = f'layer_{i}'
       layer_cache = cache[layer_name] if cache else None
@@ -535,7 +537,9 @@ class Transformer(nnx.Module):
       )
       if cache is not None:
         new_cache[layer_name] = layer_cache  # pytype: disable=container-type-mismatch
-
+    jax.debug.print("Final cache: {}", new_cache)
+    jax.debug.print("Post Block X: {}", x)
+    print(f"Post Block X shape: {x.shape}")
     x = self.final_norm(x)
     logits = self.embedder.decode(x)
 
@@ -543,6 +547,7 @@ class Transformer(nnx.Module):
       logits /= self.final_logits_softcap
       logits = jnp.tanh(logits) * self.final_logits_softcap
 
+    jax.debug.print("final logits: {}", logits)
     return logits, new_cache  # pytype: disable=bad-return-type
 
   @property
