@@ -66,7 +66,9 @@ The codebase is organized into three top-level components under the paligemma/ p
         
 ## What remains to be done:
 - Add sow intermediate function for the ViT
-- 
+- Add more configurations for PaliGemma
+- Add Example Notebook for using Gemma/PaliGemma Notebooks
+- Add Example Notebook for capturing/visualizing intermediates
     
 ```bash
 notebooks/                    # Jupyter notebooks for demos, experiments, or visualization
