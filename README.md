@@ -19,15 +19,55 @@ The codebase is organized into three top-level components under the paligemma/ p
 - Optional sowing of embeddings and intermediate activations for interpretability
 
 ## What I've Done:
-- Implemented modular PaliGemma architecture under src/models/paligemma/:
-    - paligema/transformer.py — multimodal PaliGemmaTransformer combining ViT + Gemma.
-    - paligema/sampler.py — 
-- To make the base Gemma model compatible with the official Kaggle weight files, I modified the implementation so that the parameter shapes and layouts matched the checkpoint format. Found in ```paligemma/gemma/```
-    - Stacked parameter tensors: I restructured the linear and MLP projection weights (e.g., q_proj, k_proj, v_proj, o_proj, and gate_proj/up_proj) to be stacked into a single combined tensor. This matches how the official checkpoints store them — as a single concatenated or packed tensor per layer rather than separate per-projection parameters.
+- To make the base Gemma model compatible with the official Kaggle weight files, I modified the implementation so that the parameter shapes and layouts matched the checkpoint format. Changes found in ```paligemma/gemma/```. 
+    - Stacked parameter tensors: I restructured the linear and MLP projection weights (e.g., q_proj, k_proj, v_proj, o_proj, and gate_proj/up_proj) to be stacked into a single combined tensor. This matches how the official checkpoints store them — as a single concatenated or packed tensor per layer rather than separate per-projection parameters. Example found in ```params.md```
     - Adjusted parameter loading and mapping logic: I updated the parameter initialization and checkpoint-loading utilities to unstack (split) or stack (merge) weights during load/save, ensuring consistent alignment with the Kaggle format. I also added logic in params.py and the model constructor to detect the expected parameter structure and remap accordingly.
     - Updated module definitions: I refactored the affected layers in layers.py and modules.py so that the forward passes now reference slices of the stacked weight tensor instead of independent fields. This kept the model’s functionality unchanged while making the weight layout compatible with the pretrained checkpoint.
-    - Minor interface and shape consistency fixes: I adjusted positional embeddings, normalization, and attention configurations to ensure shape broadcasting worked correctly with the new stacked parameter layout. I also added helper functions to restore these weights seamlessly.
+        
+        For example:
+        ```
+        @nnx.split_rngs(splits=self.num_layers)
+        @nnx.scan(in_axes=(nnx.Carry, 0, 0), out_axes=(nnx.Carry, 0))
+        def forward_block(x, block: modules.Block, cache):
+          new_cache, x = block(x, positions, cache, attention_mask)
+          return x, new_cache
+        ```
+        vs.
+        ```
+        for i, layer in enumerate(self.layers):
+        layer_name = f'layer_{i}'
+        layer_cache = cache[layer_name] if cache else None
+        layer_cache, x = layer(
+          x,
+          positions,
+          layer_cache,
+          attention_mask,
+        )
+        if cache is not None:
+        new_cache[layer_name] = layer_cache 
+        ```
+        The former vectorizes the per-layer pass with nnx.scan, carries x cleanly, aligns a per-layer cache as a scanned input/output, and ensures deterministic RNG splitting—all of which stays compatible with stacked weights of the chosen npz weight formatting.
+        
+        The old code did the same work but in Python, with manual dict indexing and RNG management.
 
+    - Minor interface and shape consistency fixes: I adjusted positional embeddings, normalization, and attention configurations to ensure shape broadcasting worked correctly with the new stacked parameter layout. I also added helper functions to restore these weights seamlessly.
+- Implemented modular VisionTransformer architecture under src/models/vit:
+    - VisionTransformer in Flax NNX, complete with parameter loading, attention, MLP
+- Implemented modular PaliGemma architecture under src/models/paligemma/:
+    - paligema/transformer.py — multimodal PaliGemmaTransformer combining ViT + Gemma.
+        - A transformer that combines image embeddings and text tokens into one causal sequence, modifies attention masking to allow image-to-text flow, and reuses the Gemma core architecture (RMSNorm, FeedForward, Attention, cache) for efficient image-conditioned text generation.
+    - paligema/sampler.py — 
+        - Prefill Cache
+        Original (Gemma): No separate “prefill pass.” It runs a single while-loop from step 0 and, for the prompt portion, it simply copies the next prompt token instead of sampling. Concretely, it uses jnp.where(decoding_step < num_input_tokens-1, prompt[:, t+1], sampled) so the loop doubles as both “prefill” and “decode.”
+        (PaliGemma): Added a prefill phase via _prefill_cache(...). It encodes the image prefix, builds prompt matrices/lengths, and warms the cache, then you start decoding at start_step = max_prompt_len - 1 with the warmed cache and image embeddings zimg.
+        - Attention mask
+        Original: Plain causal mask for text; it slices the visible window and inverts to a keep-mask per step.
+        (PaliGemma): Introduced _compute_paligemma_attention_mask that prepends always-visible image tokens and then applies causal text visibility, producing a [B,1, Zi+S] keep-mask (image visible + causal text).
+        
+## What remains to be done:
+- Add sow intermediate function for the ViT
+- 
+    
 ```bash
 notebooks/                    # Jupyter notebooks for demos, experiments, or visualization
 │
